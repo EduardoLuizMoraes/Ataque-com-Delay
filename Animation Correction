@@ -1,0 +1,119 @@
+// ==== CONFIG =====
+var ATTACK_ANIM_NAME = "attack";
+var DELAY_TICKS = 16;           // delay até o hit (ajuste para sincronizar)
+var CUSTOM_KNOCKBACK = 1.8;    // força horizontal desejada (1.0 ~= padrão)
+var CUSTOM_KNOCKBACK_Y = 0.55; // impulso vertical desejado
+var OVERRIDE_KNOCKBACK = true; // se true, vamos sobrepor a repulsão padrão
+// ==================
+
+function meleeAttack(event) {
+  var npc = event.getNpc();
+  var target = event.getTarget();
+  var damage = event.getDamage();
+
+  // cancela o hit padrão agora (vamos controlar quando o dano acontece)
+  event.setDamage(0);
+
+  // dispara animação
+  var anim = API.getAnimations().get(ATTACK_ANIM_NAME);
+  if (anim != null) {
+    npc.getAnimationData().setAnimation(anim);
+    npc.getAnimationData().updateClient();
+  }
+
+  // guarda alvo/dano e agenda timer
+  var timerId = Math.floor(Math.random() * 1000000);
+  npc.setTempData("delayedHit_target_" + timerId, target);
+  npc.setTempData("delayedHit_damage_" + timerId, damage);
+  npc.getTimers().forceStart(timerId, DELAY_TICKS, false);
+}
+
+// helper: tenta definir a velocidade do entity com fallbacks
+function _setEntityVelocity(entity, vx, vy, vz) {
+  try {
+    // 1) preferível: setVelocity (se exposto)
+    if (typeof entity.setVelocity === 'function') {
+      entity.setVelocity(vx, vy, vz);
+      return true;
+    }
+  } catch(e) {}
+
+  try {
+    // 2) addVelocity — primeiro zera a velocidade atual, depois adiciona a desejada
+    if (typeof entity.addVelocity === 'function') {
+      entity.motionX = 0; entity.motionY = 0; entity.motionZ = 0;
+      entity.addVelocity(vx, vy, vz);
+      return true;
+    }
+  } catch(e) {}
+
+  try {
+    // 3) acesso direto às campos motionX/Y/Z (muitas instalações permitem)
+    entity.motionX = vx;
+    entity.motionY = vy;
+    entity.motionZ = vz;
+    return true;
+  } catch(e) {}
+
+  // fallback falhou
+  return false;
+}
+
+function timer(event) {
+  var id = event.getId();
+  var npc = event.getNpc();
+  var keyT = "delayedHit_target_" + id;
+  var keyD = "delayedHit_damage_" + id;
+
+  if (!npc.hasTempData(keyT)) return;
+
+  var target = npc.getTempData(keyT);
+  var damage = npc.getTempData(keyD);
+
+  if (target != null && target.isAlive && target.isAlive()) {
+    // executa o dano (mantém partículas e som)
+    target.hurt(damage, npc);
+
+    // se quisermos controlar o knockback, sobrepomos a velocidade imediatamente
+    if (OVERRIDE_KNOCKBACK) {
+      // calcula direção horizontal do NPC -> alvo
+      var dx = (target.getX ? target.getX() : target.posX) - (npc.getX ? npc.getX() : npc.posX);
+      var dz = (target.getZ ? target.getZ() : target.posZ) - (npc.getZ ? npc.getZ() : npc.posZ);
+      var dist = Math.sqrt(dx*dx + dz*dz);
+
+      if (dist < 0.0001) {
+        // fallback baseado na rotação do NPC se a distância é praticamente 0
+        var yaw = (npc.getRotation ? npc.getRotation() : (npc.rotationYaw || 0));
+        var rad = yaw * Math.PI / 180.0;
+        // vetor apontando "frente" do NPC (ajuste se necessário)
+        dx = -Math.sin(rad);
+        dz = Math.cos(rad);
+        dist = Math.sqrt(dx*dx + dz*dz);
+      }
+
+      // normaliza e aplica força horizontal
+      if (dist > 0.000001) {
+        dx = dx / dist;
+        dz = dz / dist;
+      }
+
+      var vx = dx * CUSTOM_KNOCKBACK;
+      var vz = dz * CUSTOM_KNOCKBACK;
+      var vy = CUSTOM_KNOCKBACK_Y;
+
+      // tenta aplicar com os fallbacks definidos
+      var ok = _setEntityVelocity(target, vx, vy, vz);
+
+      // (opcional) se o método acima falhar, tentar usar target.knockback como último recurso
+      if (!ok) {
+        try { 
+          if (typeof target.knockback === 'function') target.knockback(CUSTOM_KNOCKBACK, npc.getRotation ? npc.getRotation() : 0);
+        } catch(e) {}
+      }
+    }
+  }
+
+  // limpa temp data
+  npc.removeTempData(keyT);
+  npc.removeTempData(keyD);
+}
